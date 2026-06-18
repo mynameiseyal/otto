@@ -117,7 +117,9 @@ Most value comes from **email, calendar, Slack, notes (some), contacts**. Severa
 
 ## 6. Voice & wake-word subsystem
 
-**Pipeline:** `Mic → VAD → Wake word → Speech-to-Intent → router`
+**Pipeline:** `Mic → VAD → Wake word → { bounded intent: Speech-to-Intent | proper-noun intent: STT → phonetic contact match } → router`
+
+> **Split by intent type (see §13.5 D2):** bounded, no-proper-noun commands go through **Rhino speech-to-intent** (instant, battery-light). Queries with a **contact name** route to **on-device STT + phonetic matching** against the contact list, because a fixed grammar can't hold an open, per-user, mutable vocabulary. The always-on path stays Rhino-only; STT only runs for tap-to-talk / post-wake-word name queries.
 
 **Battery mitigations (Android always-on):**
 - **Cascade detection:** cheap **VAD** (is there *any* speech?) gates the wake-word model so it isn't scoring silence.
@@ -131,9 +133,10 @@ Most value comes from **email, calendar, Slack, notes (some), contacts**. Severa
 | Function | Candidate | Notes |
 |---|---|---|
 | Wake word | **Picovoice Porcupine** / openWakeWord | Efficient, custom phrase, on-device |
-| **Speech → intent** | **Picovoice Rhino** | Audio → intent+slots in a defined grammar; *skips transcription* — ideal for "no LLM" + battery |
-| NLU on text (fallback) | **Snips NLU** (on-device) | Intent + slot filling, no cloud, no LLM |
-| STT (only if needed) | Android `SpeechRecognizer` (offline) / iOS `Speech` / Vosk | Use only when free-text capture is required |
+| **Speech → intent** (bounded) | **Picovoice Rhino** | Audio → intent+slots in a defined grammar; *skips transcription* — ideal for "no LLM" + battery. **Fixed context compiled ahead of time; cannot hold live contact names** (see §13.5 D2) |
+| NLU on text | **Snips NLU** (on-device) | Intent + slot filling on transcribed text, no cloud, no LLM |
+| **STT (proper-noun queries)** | Android `SpeechRecognizer` (offline) / iOS `Speech` / Vosk | **Required for contact-name slots** — transcribe, then phonetically match to contacts. Also any free-text capture |
+| Phonetic name match | Double Metaphone / Jaro–Winkler (+ phoneme model for non-Latin) | Match spoken name → on-device contact list; disambiguate close candidates |
 | TTS | Android `TextToSpeech` / iOS `AVSpeechSynthesizer` | On-device output |
 
 > Verify licensing/pricing of any third-party engine (Picovoice has per-app tiers) during validation.
@@ -160,7 +163,7 @@ Most value comes from **email, calendar, Slack, notes (some), contacts**. Severa
 | `notifications_recap` | "What did I miss?" | timeframe | NotificationListener feed |
 
 **Entity resolution:**
-- **People:** resolve names → **Contacts** (on-device); handle ambiguity ("which Dawid?") with a quick disambiguation prompt.
+- **People:** resolve names → **Contacts** (on-device) via **phonetic + edit-distance matching** (the contact list is the candidate set), so spoken/typed "Avital", "Dawid", "Dominik" map to the nearest-sounding contact; handle ambiguity ("which Dawid?") with a quick disambiguation prompt. For voice, the name arrives as **STT text** (not a Rhino slot) — see §13.5 D2. Typed queries skip STT and match text directly, so person-name intents work even if voice STT is weak.
 - **Time:** on-device date/time parser ("tomorrow", "last week", "after 3pm").
 - **Channels/labels:** map "the release channel" → Slack channel ID via synced metadata.
 
@@ -327,6 +330,30 @@ The freshness gap A leaves (proactive/between-use staleness) is exactly the part
 - Dynamic vocab refresh (contacts change) runs **on-device in <2s** and needs no rebuild/cloud.
 - If thresholds miss → **de-scope person-name voice intents from MVP**; keep them in type-to-query, and record the limitation in §7's fallback contract.
 **Owner:** Voice/on-device ML engineer.
+
+#### D2 — Decision record (2026-06-18): **person-name voice intents IN, via STT + phonetic match (not Rhino slots)**
+
+**The spike's premise was wrong.** It assumed we could "inject ~200 contact names into the speech-to-intent slot" with an on-device refresh in <2s. But **Picovoice Rhino compiles its grammar + slot values into a fixed `.rhn` context *ahead of time* (in Picovoice Console)** — there is **no on-device context compiler**. You cannot stream a user's live, changing contact list into a Rhino slot at runtime, let alone in <2s without a cloud/rebuild. So the exit criterion as written is **unachievable by construction** with Rhino. Speech-to-intent is the wrong tool for an **open, per-user, mutable vocabulary** like contact names.
+
+**Decision:** Keep person-name voice intents **in scope for MVP**, but deliver them with a different mechanism, and split the voice pipeline by intent type:
+
+| Query type | Mechanism | Why |
+|---|---|---|
+| **Bounded, no proper noun** (`next_meeting`, `today_agenda`, `notifications_recap`, `unread_from` with a label like "boss") | **Rhino speech-to-intent** | Instant, offline, battery-light, deterministic — Rhino's sweet spot |
+| **Proper-noun slot** (`meeting_with_person`, `last_message_from`, "…from Avital") | **On-device STT → intent parse → phonetic contact match** | Open vocabulary needs transcription + fuzzy matching, not a fixed grammar |
+
+**Name resolution is a matching problem, not a recognition problem.** STT only has to get the name *phonetically close*; we then match the spoken token against the **on-device contact list** using phonetic + edit-distance scoring (Double Metaphone / Jaro–Winkler, plus a phoneme model for non-Latin scripts). The contact list is the candidate set, so "Avital", "Dawid", "Dominik" resolve by nearest-sounding match, with a **disambiguation prompt** when top candidates are close. This refreshes trivially when contacts change (it's just a lookup table), satisfying the *intent* of the old <2s criterion without compiling anything.
+
+**This is still "no LLM."** STT (Android `SpeechRecognizer` offline / iOS `Speech` / Vosk) + grammar/fuzzy NLU + phonetic match — no generative model, on-device, private. Heavier STT only runs for name-bearing queries, which are **tap-to-talk / post-wake-word** moments (not always-on scoring), so the battery story in §6 holds: the always-on path stays Rhino-only.
+
+**Guaranteed baseline + fallbacks (so this can't hard-fail):**
+1. **Typed queries** always do reliable text → phonetic contact match (no STT in the loop) — person-name intents work on day one via keyboard regardless of voice accuracy.
+2. **OS-assistant hand-off** (Siri / Google Assistant) for voice name capture as a fallback — those recognizers are already **biased to the user's contacts** and handle proper nouns far better than offline STT.
+3. If offline STT proves too weak on non-English names, name-by-voice degrades to (1)/(2); bounded voice intents are unaffected.
+
+**What the spike should *actually* measure (reframed, ~3 days):** offline-STT + phonetic-match top-1/top-3 accuracy on ~200 real contacts incl. Hebrew given names, quiet + noisy, 2–3 speakers — to decide whether **offline STT** is good enough or whether name-by-voice should lean on **OS hand-off**. The architecture decision (above) does **not** depend on this number; only the *voice-capture engine choice* does. Keep the **≥85% quiet / ≥70% noisy, or top-3+disambiguation ≥90%** bar as the offline-STT go/no-go.
+
+**Net:** the original "Rhino can't do proper nouns → person intents don't ship" blocker is **dissolved** — we don't ask Rhino to do them. Updates applied to §6 (pipeline + engine roles) and §7 (entity resolution). 
 
 ### Decision 3 — Notification connector status (core vs optional)
 
