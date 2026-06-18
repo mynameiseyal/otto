@@ -1,0 +1,20 @@
+---
+description: Git branch, commit, and PR conventions for solo GitHub projects
+alwaysApply: true
+---
+
+# Branch naming
+- Format: `<type>/<issue#>-<short-slug>` (e.g. `feat/42-resume-checkpointing`)
+- Omit the issue number when no GitHub issue exists: `<type>/<short-slug>`
+- Lowercase, hyphenated slug, no spaces.
+
+# Commit & PR titles (Conventional Commits)
+- Format: `<type>: <imperative description>` (e.g. `feat: add checkpoint-resume to training loop`)
+- Do NOT put issue numbers in the title.
+- Allowed types: feat, fix, refactor, perf, chore, docs, test, ci, build
+
+# PR body
+- When the PR resolves an issue, include a closing keyword: `Closes #<issue>`.
+- This auto-closes the issue on merge to the default branch.
+
+# When the user references a task by issue number, use that number in the branch name.
