@@ -417,14 +417,45 @@ The freshness gap A leaves (proactive/between-use staleness) is exactly the part
 - Sign-off recorded before Phase 1 starts; otherwise scope is constrained until met.
 **Owner:** Legal counsel + DPO.
 
+#### D4 — Decision record (2026-06-18): **GO, with constraints — pending lawyer ratification**
+
+> ⚠️ **Not legal advice.** This is a structured posture to hand to counsel/DPO for ratification. The gate's human sign-off remains outstanding; everything below is the *recommended* position and reasoning.
+
+**Decision (recommended):** **GO** for Phase 1, on the posture that **D1 (zero-cloud) does most of the legal work**:
+- **The developer is not a controller of indexed content.** Because there is **no backend** (D1 = A), the developer never receives, stores, or processes users' or third parties' content. Processing happens entirely on the user's device, under the user's control. The developer is only a controller for whatever it *actually* collects — which, with content-free telemetry, is approximately nothing.
+- **The user's processing falls under the GDPR household exemption** (Art. 2(2)(c)): a natural person indexing data they **already lawfully hold** (their own inbox, messages, notifications, contacts) for **purely personal** organization, with **no onward disclosure**. This is materially the same as the email client, notes app, or calendar app the user already runs. (Guardrail from *Ryneš*/*Lindqvist*: the exemption is lost if data is published or shared to an indefinite audience — Otto does neither; it's strictly local and single-user.)
+
+**Per-item resolution of the gate's checklist:**
+1. **Lawful basis / third-party data:** household exemption for the user; developer = non-controller of content. No separate lawful basis needed *from* the third parties, because Otto (the developer) isn't the one processing their data and the user's use is personal/household.
+2. **Special-category data (Art. 9):** will inevitably appear in messages, but (a) it's covered by the household exemption for the user, and (b) **design constraint: no special-category inference/profiling** — Otto indexes and retrieves as-is for explicit user queries; the "no-LLM, bounded-intent" design already avoids building sensitive profiles. Document this as a hard rule.
+3. **Children's data:** Otto is **not directed at children**; set an age floor in ToS (≥16, aligned to GDPR digital-consent age) and don't market to children. Incidental third-party children's data in the user's messages is covered by the same household-exemption logic. Set store age ratings/Data-safety accordingly.
+4. **Transfer map:** **empty on Otto's side** — no backend means no international transfers by Otto. Connector data flows are the **user's own pre-existing relationships** with Google/Microsoft/Slack (their controllership, their transfer terms), not Otto's.
+5. **SMS/Call-log:** **dropped** — confirmed in writing here and in §10.
+
+**DPIA:** a formal Art. 35 DPIA is likely **not triggered** (no large-scale processing *by the developer*), but a **documented DPIA-lite / privacy risk assessment is recommended** as good practice — mainly to record this non-controller + household-exemption reasoning and the special-category guardrail.
+
+**Hard dependency / re-open trigger:** this entire posture **rests on D1 = zero-cloud**. If Otto ever adopts a backend (Option B/C), the developer likely becomes a **controller/processor** of content or metadata → full GDPR obligations, lawful basis, DPIA, transfer map, and a fresh DPO review. **Re-open D4 if D1 changes.**
+
+**Constraints that must hold (make the posture true):**
+- Stay zero-cloud (D1); content-free, PII-redacted, local-only-capable telemetry.
+- No special-category profiling/inference; no onward sharing of indexed data.
+- Retention caps + user purge/export (§5); per-source revoke.
+- Public privacy policy stating what's indexed, on-device-only processing, retention/deletion, and contact point.
+
+**Residual sign-off (the actual gate close):** counsel/DPO ratifies the household-exemption + non-controller analysis and approves the privacy policy + ToS age floor. Recorded as **provisionally GO**; treat as ratified for solo planning, formalize with a lawyer before public release.
+
+**Net:** **GO** — the zero-cloud architecture (D1) is what makes Otto legally clean: developer-as-non-controller + user-under-household-exemption, with a special-category guardrail and an explicit re-open trigger if the cloud posture ever changes.
+
 **Gate summary**
 
-| # | Decision | Spike length | Exit = | Owner |
+| # | Decision | Exit = | Owner | Status (2026-06-18) |
 |---|---|---|---|---|
-| 1 | Cloud vs zero-cloud | 3d | A / B / C posture committed | Backend (+DPO, Security) |
-| 2 | Proper-noun voice | 4d | Ship vs de-scope person intents | Voice/ML |
-| 3 | Notification connector | 3d | Core / opt-in / cut | Compliance (+Security, DPO) |
-| 4 | Third-party data legal | 5d | Go / constrain / no-go | Legal + DPO |
+| 1 | Cloud vs zero-cloud | A / B / C posture committed | Backend (+DPO, Security) | ✅ **A — pure on-device** |
+| 2 | Proper-noun voice | Ship vs de-scope person intents | Voice/ML | ✅ **Ship — STT + phonetic match** |
+| 3 | Notification connector | Core / opt-in / cut | Compliance (+Security, DPO) | ✅ **Opt-in, promoted, on-device** |
+| 4 | Third-party data legal | Go / constrain / no-go | Legal + DPO | ✅ **GO w/ constraints** (pending lawyer ratification) |
+
+> **All four Phase-0 decision gates are resolved (2026-06-18).** Recurring theme: **D1 (zero-cloud) cascades** — it underpins the battery story (D1), the notification Data-safety posture (D3), and the legal posture (D4). The remaining empirical work (battery PoC §13.1, offline-STT name accuracy per D2, notification-feed PoC §13.2) and the human sign-offs (compliance for D3, counsel/DPO for D4) are tracked but do not block Phase 1 planning.
 
 ---
 
