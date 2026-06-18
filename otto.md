@@ -288,6 +288,35 @@ The heavy parts (background audio, notification listener, content providers, OS 
 - A written one-paragraph posture statement is committed to §15.4 and the privacy doc.
 **Owner:** Backend/data engineer (decision), with DPO + Security sign-off.
 
+#### D1 — Decision record (2026-06-18): **Option A (pure on-device) for MVP**
+
+**Decision:** Ship **A — pure on-device, poll + on-demand live refresh** for Android MVP. Defer **B** (thin relay) behind a feature seam; **C** (encrypted multi-device sync) is out of scope until iOS/multi-device is real. *Gate closed by decision* — the relay spike is **not** required to decide, for the reasons below.
+
+**Why push isn't core (the key realization):** the product is **ask-based**, not proactive-alert-based. Every flagship intent is pulled by the user ("when's my next meeting?", "any unread from my boss?"). Freshness only has to be correct *at the moment of asking*, which `§5`'s **targeted live refresh** of the single relevant source already covers. A modest background **poll** keeps the index "warm enough" for instant answers between uses. Proactive push ("you just got an important email") is not a stated v1 feature — so the main thing a backend buys us isn't something we're selling yet.
+
+**Why push can't be zero-cloud (so B/C mean a real backend):**
+- **Gmail:** `users.watch` publishes to a **Google Cloud Pub/Sub** topic; the notification carries only a `historyId` (no content), and the watch **expires ~7 days** (needs renewal). Delivering that to the device needs either on-device Pub/Sub credentials + a persistent connection (kills battery, leaks creds) or a **server** webhook → FCM. → server.
+- **Microsoft Graph:** mail subscriptions require a **public HTTPS webhook** with a validation handshake and periodic renewal. → server.
+- In both, content is still pulled **directly by the device** with the user's OAuth token, so a relay *can* avoid storing content — **but it still sees metadata**: which mailbox changed, and the timing/volume of changes. That is personal data with a transfer surface, DPIA weight, and an always-on service to secure/operate.
+
+**Cost/benefit that drives A:**
+
+| Factor | A (on-device) | B (thin relay) |
+|---|---|---|
+| Freshness *when asking* | Good (live refresh) | Good |
+| Freshness *between uses* | ~15 min Android (WorkManager floor); coarse on iOS (BG budget) | Near-real-time |
+| Battery | Fine if polls are delta-only, batched, constrained | Best |
+| Privacy/legal | **Cleanest** — no transfer, no metadata leak, no server | Relay sees mailbox + change metadata; transfer map + DPIA + ops |
+| Backup/restore | User-driven **encrypted export** to their own storage (no managed service needed) | Same |
+
+The freshness gap A leaves (proactive/between-use staleness) is exactly the part the product doesn't currently sell, so we don't pay the backend's legal+ops+security cost to close it yet.
+
+**Architectural seam to keep B cheap later:** put background freshness behind a `FreshnessSource` abstraction with two implementations — `PollingFreshness` (A, default) and a future `PushFreshness` (B). The connector `syncDelta()`/`refreshOne()` contracts in `§8` are identical for both, so adding a relay later is additive, not a rewrite.
+
+**Revisit-B triggers (write these down so the decision is falsifiable):** (1) we add a **proactive-alert** feature users actually ask for; (2) field data shows the 15-min poll floor makes "what did I miss" feel stale; (3) iOS background budget proves too coarse for acceptable freshness. If any fires, build the relay spike then — content-free, ping-only, with a transfer map.
+
+**Sign-off needed to ratify:** DPO + Security confirm A as the committed posture (trivial, since A removes their hardest surface). SMS/Call-log remain dropped (`§10`).
+
 ### Decision 2 — Proper-noun voice strategy (biggest feasibility risk)
 
 **Why it's a gate:** the flagship intents (`meeting_with_person`, `last_message_from`) need arbitrary **contact names** to survive the *audio→intent* stage, but fixed-grammar speech-to-intent (§6) treats proper nouns as out-of-vocabulary. If this fails, person-name voice intents don't ship.
@@ -351,7 +380,7 @@ The heavy parts (background audio, notification listener, content providers, OS 
 1. **Always-on voice:** ship it (Android, opt-in, battery cost) or start launch-only and add later?
 2. **Closed apps:** are you OK telling users **WhatsApp/IG = recent notifications only**, and **Facebook/TikTok dropped**? Or is one of them a must-have we should re-scope around?
 3. **iOS expectation:** acceptable that iOS has no custom hands-free wake word (Siri hand-off instead)?
-4. **Cloud or zero-cloud:** strictly on-device (best privacy story, harder push/sync), or a thin optional backend for push relays and heavy backfill? → **gated by §13.5 D1** (push requires a server; resolve first).
+4. **Cloud or zero-cloud:** **DECIDED (2026-06-18) → Option A, pure on-device** for MVP. Posture: *Otto runs entirely on-device; connectors pull directly from providers with the user's own OAuth tokens; freshness comes from on-demand targeted live refresh plus a battery-aware background poll; there is no Otto backend, so no Otto server ever sees user content or metadata. A thin content-free push relay (Option B) is deferred behind a `FreshnessSource` seam and only revisited if proactive alerts ship, poll-freshness proves too stale in the field, or iOS background budgets force it.* See `§13.5` D1 decision record. (Privacy doc: TODO — restate this posture there.)
 5. **Build model:** KMP shared core vs fully native ×2?
 6. **First connector set:** confirm Gmail + Calendar + Slack + Contacts as Phase 1.
 
