@@ -1,0 +1,27 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# Build output (Android / iOS / KMP — for when code lands)
+build/
+.gradle/
+local.properties
+*.iml
+xcuserdata/
+DerivedData/
+Pods/
+.kotlin/
+
+# Secrets / local config
+*.env
+.env
+.env.*
+*.keystore
+*.jks
+secrets.properties
