@@ -367,6 +367,44 @@ The freshness gap A leaves (proactive/between-use staleness) is exactly the part
 - Default decision: ship as **opt-in, non-core** (app fully functional without it) unless compliance owner clears it as core.
 **Owner:** App-store/release-compliance owner, with Security + DPO.
 
+#### D3 — Decision record (2026-06-18): **opt-in, separately-consented, promoted feature — app fully usable without it**
+
+**Decision:** Ship the notification-recap connector as an **opt-in feature gated behind its own prominent disclosure + affirmative consent**, with the app **fully functional without it**. It *is* promoted in the listing (so the access maps to a real, disclosed feature), but it is **not a precondition** to use Otto. Bounded connectors (Gmail/Calendar/Slack/Contacts) carry the MVP; notification recap is the differentiated add-on.
+
+**Two corrections to this gate's original framing:**
+1. **There is no Play "Permissions Declaration Form" for notification access.** That form covers **SMS/Call Log** (which we already drop, §10). `BIND_NOTIFICATION_LISTENER_SERVICE` is a signature-level permission the *user* grants via system Settings → Notification access. Compliance instead hinges on Google Play's **sensitive-data policy**: access must be (a) **necessary for a feature promoted in the store listing**, (b) preceded by **prominent in-app disclosure + affirmative consent**, (c) accurately reflected in the **Data safety** section, and (d) covered by a public, non-geofenced **privacy policy**.
+2. **D1 (zero-cloud) is the single biggest de-risker.** Google Play "collection" means data **sent off the device**. Because Otto processes notifications **on-device only with no backend**, the Data safety section can declare **no collection/sharing off-device** for notification content — dramatically lowering review risk. We still must **disclose the on-device access**.
+
+**Why opt-in/non-core (not core):** if notification access *is* the app's promoted core purpose, reviewers scrutinize it as a "read everything" app and rejection risk spikes. Framing it as one **optional, separately-consented capability** within a broader assistant (a) keeps the app reviewable on its bounded connectors alone, (b) still satisfies "tied to promoted functionality" because the recap feature is itself promoted, and (c) gives the user an explicit on/off decision.
+
+**Implementation constraints (make the policy posture true in code):**
+- **Per-app ingestion allowlist** — user explicitly picks which apps to recap; default none.
+- **Global kill switch** + easy revoke; honor `onListenerDisconnected`.
+- **Forward-only** — no historical backfill (the API can't anyway); retention cap per §5.
+- **On-device only** — never transmit notification content (consistent with D1).
+- **Sensitive redaction is automatic:** on Android 15+, a third-party listener without `RECEIVE_SENSITIVE_NOTIFICATIONS` (which we won't hold — it's signature/role) **cannot see OTP/sensitive notification content**. We treat that as a *feature*, not a gap, and document the limit.
+- **Honest foreground-service notification** for the always-on voice path is separate (needs `POST_NOTIFICATIONS` on Android 13+).
+
+**Capability limits to communicate:** Android-only; forward-only (not history); OTP/sensitive content redacted by the OS; quality depends on what each app puts in its notifications.
+
+**Draft compliance artifacts (for compliance-owner + legal review):**
+
+*Prominent-disclosure consent copy (shown before enabling, in-app, before the system settings deep-link):*
+> **Turn on Notification Recap?** Otto will read incoming notifications **only from the apps you choose** so it can answer "what did I miss?". This happens **entirely on your device** — notification content is never uploaded or shared. Otto can't see one-time passcodes or other sensitive notifications. You can turn this off or change which apps anytime. [Choose apps] [Not now]
+
+*Store-listing justification snippet (ties access to promoted feature):*
+> Otto's optional "Notification Recap" reads notifications from apps you select to summarize what you missed across messaging and social apps. All processing is on-device.
+
+*Data safety mapping (given D1 = on-device only):*
+| Data type | Collected (sent off device)? | Shared? | Notes |
+|---|---|---|---|
+| Messages / in-app content (from notifications) | **No** | **No** | Processed on-device only; never transmitted |
+| App activity (notification metadata) | **No** | **No** | On-device index only |
+
+**Residual sign-off needed:** release-compliance owner approves listing copy + the disclosure flow; legal/DPO approves the privacy-policy text covering notification access. These are approvals, not blockers to building the PoC.
+
+**Net:** notification recap **ships** as an opt-in, on-device, per-app, forward-only feature with explicit consent — the zero-cloud decision makes the Data-safety story clean, and opt-in framing minimizes review risk. The "Permissions Declaration Form" worry was a misclassification.
+
 ### Decision 4 — Legal posture on third-party data (no build without this)
 
 **Why it's a gate:** the index is built largely from **other people's** personal data (senders, participants, contacts, notification contents) and will inevitably include **special-category data**. The "GDPR-aligned" bullet (§10) doesn't establish a lawful basis for third-party data subjects.
