@@ -34,5 +34,6 @@ Tracked as `chore/` branches, each ending in a short decision note appended to `
 | D2 Proper-noun voice | `chore/d2-proper-noun-voice` | Ship vs de-scope person intents |
 | D3 Notification connector | `chore/d3-notification-connector` | Core / opt-in / cut |
 | D4 Third-party data legal | `chore/d4-third-party-data-legal` | Go / constrain / no-go |
+| D5 LLM posture | `chore/d5-byo-llm-open-ended` | Hold no-LLM / on-device / bring-your-own |
 
-Resolve **D1 first** — it cascades into the other three.
+Resolve **D1 first** — it cascades into the others (battery, notification Data-safety, legal, and the D5 LLM posture all rest on zero-cloud).
