@@ -92,6 +92,27 @@ interface Connector<RAW> {
      */
     suspend fun refreshOne(query: RefreshQuery): RefreshOutcome<RAW> = RefreshOutcome.Unsupported
 
+    /**
+     * Full-history search on the PROVIDER side, for queries the 90-day hot index misses
+     * (§5.2 two-tier memory). Bounded + paginated; raw records flow through normalize().
+     * Throws ConnectorException on failure. Only offered if SEARCH_HISTORY is granted.
+     */
+    suspend fun searchHistory(query: HistoryQuery, cursor: SyncCursor?): SyncPage<RAW> =
+        throw UnsupportedOperationException()
+
+    /**
+     * Perform a write/action on the user's behalf (Phase 1: calendar, email, Slack, notes).
+     * MUST be preceded by explicit user confirmation (§3.1). Returns an undo handle where
+     * the provider allows it. Only offered for the WRITE_* capability the connector grants.
+     */
+    suspend fun write(action: WriteAction): WriteResult = throw UnsupportedOperationException()
+
+    /**
+     * Reverse a previous write via the token from its UndoHandle (§3.1), while the handle
+     * is still valid. Throws ConnectorException on failure (e.g. window elapsed).
+     */
+    suspend fun undo(token: String) = throw UnsupportedOperationException()
+
     /** Revoke access; optionally purge this source's rows from the index. */
     suspend fun revoke(options: RevokeOptions)
 }
@@ -101,6 +122,27 @@ Design notes:
 - **Generic `RAW`** keeps `syncDelta` and `normalize` honest: the connector owns its wire type; the engine only ever sees `SyncRecord`. `normalize` is **pure** so it is trivially unit-testable against captured fixtures.
 - **`syncDelta` is one page.** The engine loops it while `page.hasMore`, persisting `page.cursor` between calls. This gives resumable backfill and incremental delta with the same method. Failures don't ride in the page — they're **thrown** (§4.1), so a `SyncPage` always means success.
 - **No method blocks on network in the query path** except `refreshOne`, which is explicitly bounded.
+
+### 3.1 Write actions (Phase 1 includes writes — decision Q5)
+
+Reads are safe; **writes act on the world** (a sent email can't be unsent). Phase 1 supports writes for **calendar, email, Slack, and notes**, under a strict contract:
+
+- **Confirm before every write.** The planner/UI MUST show the exact action and get explicit user approval before `write()` is called ("Send this email to Dana? — [Send] [Cancel]"). No silent or batched writes.
+- **Undo where the provider allows it.** `WriteResult` carries an `UndoHandle` when reversal is possible (delete a created event/note, Gmail "undo send" window, delete a Slack message). When it's genuinely irreversible (email past the undo window), say so in the confirmation step rather than implying it can be undone.
+- **Writes are off the always-on path.** They only originate from an explicit user request (typed, or post-wake-word), never from background sync or proactive logic.
+- **Per-connector + per-capability.** A connector only exposes `write()` for the `WRITE_*` capability it actually grants; the planner degrades gracefully if a write scope is missing (§5 scope-drift).
+
+```kotlin
+sealed interface WriteAction {
+    data class CreateEvent(val title: String, val start: Instant, val end: Instant, val invitees: List<PersonRef>) : WriteAction
+    data class RespondToEvent(val sourceEntityId: SourceEntityId, val response: Rsvp) : WriteAction
+    data class SendMessage(val to: List<PersonRef>, val body: String, val replyTo: SourceEntityId? = null) : WriteAction // email or chat, per connector
+    data class CreateNote(val title: String?, val body: String, val appendTo: SourceEntityId? = null) : WriteAction
+}
+enum class Rsvp { ACCEPTED, DECLINED, TENTATIVE }
+data class WriteResult(val created: SourceEntityId?, val undo: UndoHandle?)
+class UndoHandle(val expiresAt: Instant?, val token: String)  // pass token to undo(); null expiry = undoable until further notice
+```
 
 ---
 
@@ -120,8 +162,17 @@ data class SyncPage<RAW>(
 // --- Capabilities ---
 data class CapabilitySet(val granted: Set<Capability>)
 enum class Capability {
-    READ_MESSAGES, READ_THREADS, READ_EVENTS, WRITE_EVENTS, READ_NOTES,
-    READ_CONTACTS, LIVE_REFRESH, PUSH_HINTS /* reserved for future relay, D1 Option B */
+    // Read
+    READ_MESSAGES, READ_THREADS, READ_EVENTS, READ_NOTES, READ_CONTACTS,
+    // Retrieval helpers
+    LIVE_REFRESH,        // refreshOne(): bounded on-demand refresh of the hot index
+    SEARCH_HISTORY,      // searchHistory(): provider-side full-history search (§5.2 cold tier)
+    // Write (Phase 1 — decision Q5; every write is confirm-gated, §3.1)
+    WRITE_EVENTS,        // create / RSVP calendar events
+    SEND_MESSAGE,        // send / reply email or Slack message (per connector)
+    WRITE_NOTES,         // create / append notes
+    // Reserved
+    PUSH_HINTS,          // future relay, D1 Option B
 }
 
 // --- Auth ---
@@ -131,8 +182,11 @@ sealed interface AuthResult {
     data class Failed(val error: ConnectorError) : AuthResult
 }
 
-// --- Live refresh ---
+// --- Live refresh & history search ---
+// budget: engine picks by network — 1.5s on Wi-Fi, 2.5s on cellular (decision Q2, fine-tune later)
 data class RefreshQuery(val keywords: List<String>, val since: Instant?, val budget: Duration = 1.5.seconds)
+// History search has a looser budget than refreshOne — it's an explicit, user-confirmed cold-tier lookup (§5.2)
+data class HistoryQuery(val keywords: List<String>, val before: Instant? = null, val budget: Duration = 8.seconds)
 sealed interface RefreshOutcome<out RAW> {
     data class Fresh<RAW>(val records: List<RAW>) : RefreshOutcome<RAW>  // engine runs these through normalize()
     data object FellBackToIndex : RefreshOutcome<Nothing>   // timed out / errored — answer from index, label stale
@@ -196,6 +250,19 @@ class PollingFreshness(...) : FreshnessSource   // A — default, ships in MVP
 
 `syncDelta`/`refreshOne` are identical under both, so adding push is additive (per D1's decision record).
 
+### 5.2 Two-tier memory: hot index + cold history search (decision Q1)
+
+The 90-day index cap (§5) keeps Otto fast, small, and battery-cheap — but the answer you need might be **ten years old**. Otto solves this with two tiers instead of indexing everything:
+
+- **Hot tier — the local index (~90 days, configurable).** Always synced, instant, offline. Answers the overwhelming majority of queries.
+- **Cold tier — provider-side full history.** Gmail, Microsoft Graph, and Slack all expose **server-side search over the user's entire history**. Otto doesn't store that decade locally; it reaches it **on demand** via `searchHistory()`.
+
+**Planner flow on an index miss:**
+
+> Index miss → *"I didn't find anything in the last 90 days. Want me to search your full Gmail history?"* → on **yes**, run `searchHistory()` over all history → return hits, and optionally **pin** them into the index so the follow-up is instant.
+
+This keeps a tiny hot index while still reaching arbitrarily far back. Trade-offs to communicate: the cold path needs a **network round-trip**, only works while that source stays **connected**, and depends on the **provider's own search quality**. Connectors that can't search history (e.g. the notification feed) simply don't grant `SEARCH_HISTORY`, and the planner won't offer it.
+
 ---
 
 ## 6. Security & storage obligations
@@ -203,7 +270,7 @@ class PollingFreshness(...) : FreshnessSource   // A — default, ships in MVP
 - Connectors **never** persist tokens or index rows directly. They receive tokens from `TokenStore` (backed by Keystore/Keychain) and emit `SyncRecord`s to the engine, which writes the encrypted index.
 - `TokenStore` honors the §10 rule: Keystore keys are hardware-bound/non-backed-up; Keychain items use a `ThisDeviceOnly` accessibility attribute; the index DB is excluded from OS auto-backup.
 - `normalize` must **redact nothing and infer nothing sensitive** (D4 special-category guardrail) — it maps as-is for explicit user queries; no profiling.
-- A connector must declare, via `capabilities()`, exactly what it can read, so the Data-safety surface (§10) and the planner stay truthful.
+- A connector must declare, via `capabilities()`, exactly what it can read **and write**, so the Data-safety surface (§10) and the planner stay truthful. Write scopes (`WRITE_*`) are requested separately and gated by the §3.1 confirm-before-write contract.
 
 ---
 
@@ -216,7 +283,9 @@ A shared test harness runs each connector against captured fixtures + a mock pro
 3. **Error mapping** — provider 401/403/429/5xx/404 are thrown as `ConnectorException` with the correct `ConnectorError` variant (recoverable vs terminal).
 4. **Backoff isolation** — a connector stuck in `RATE_LIMITED` does not delay another connector's sync or an index-answered query.
 5. **Live-refresh budget** — `refreshOne` over budget returns `FellBackToIndex` within the timeout; never throws.
-6. **Revoke+purge** — after `revoke(purgeIndexedData=true)`, no rows for that source remain.
+6. **History search** (if `SEARCH_HISTORY`) — `searchHistory` returns matches older than the hot-index window; results flow through `normalize` identically to sync; respects its budget.
+7. **Write confirm + undo** (if any `WRITE_*`) — `write()` is reachable only after a confirm step in the harness; where reversal is supported, the returned `UndoHandle.token` drives `undo()` and the action is gone; a connector with no write scope rejects `write()`/`undo()` cleanly.
+8. **Revoke+purge** — after `revoke(purgeIndexedData=true)`, no rows for that source remain.
 
 ---
 
@@ -227,9 +296,11 @@ class GmailConnector(private val tokens: TokenStore) : Connector<GmailMessage> {
     override val id = ConnectorId("gmail")
     override val source = SourceType.EMAIL
 
-    override fun capabilities() = CapabilitySet(
-        setOf(Capability.READ_MESSAGES, Capability.READ_THREADS, Capability.LIVE_REFRESH)
-    )
+    override fun capabilities() = CapabilitySet(setOf(
+        Capability.READ_MESSAGES, Capability.READ_THREADS,
+        Capability.LIVE_REFRESH, Capability.SEARCH_HISTORY,   // gmail search covers full history
+        Capability.SEND_MESSAGE,                              // send/reply (confirm-gated, §3.1)
+    ))
 
     override suspend fun authenticate(ctx: AuthContext): AuthResult { /* AppAuth OAuth, scoped */ }
 
@@ -249,6 +320,14 @@ class GmailConnector(private val tokens: TokenStore) : Connector<GmailMessage> {
     )
 
     override suspend fun refreshOne(query: RefreshQuery): RefreshOutcome<GmailMessage> { /* one bounded history.list */ }
+
+    // cold tier (§5.2): provider-side search over ALL history when the 90-day index misses
+    override suspend fun searchHistory(query: HistoryQuery, cursor: SyncCursor?): SyncPage<GmailMessage> { /* messages.list?q=... */ }
+
+    // write (§3.1): confirm-gated send/reply; undo = Gmail's send-undo window
+    override suspend fun write(action: WriteAction): WriteResult { /* messages.send; return UndoHandle(expiresAt=+30s) */ }
+    override suspend fun undo(token: String) { /* cancel within send-undo window / messages.delete */ }
+
     override suspend fun revoke(options: RevokeOptions) { /* token revoke + optional purge */ }
 }
 ```
@@ -257,14 +336,22 @@ Push for Gmail (`users.watch` → Pub/Sub) is deliberately **not** here: it need
 
 ---
 
-## 9. Open questions (to settle before/while building)
+## 9. Resolved decisions (2026-06-20)
 
-1. **Backfill depth default** — initial sync window (the §5 90-day cap) per source, and whether the user can extend it.
-2. **`refreshOne` budget** — is 1.5s right on cellular? Per-source override?
-3. **Contacts as connector vs. ambient** — Contacts feeds entity resolution for *all* connectors; does it implement `Connector` or sit beside the engine as a resolver input? (Leaning: a `Connector` that the resolver subscribes to.)
-4. **Notification connector shape** — it's event-pushed by the OS, not pulled; does it implement `syncDelta` (drains a buffer) or a separate `StreamingConnector` sub-interface? (Leaning: a buffer-draining `syncDelta` so the engine stays uniform.)
-5. **Write capabilities** — `WRITE_EVENTS` (create/respond to calendar events) is listed but Phase 1 is read-only; confirm defer.
+| # | Question | Decision |
+|---|---|---|
+| **Q1** | Backfill depth / data older than 90 days | **Two-tier memory** (§5.2): 90-day hot index (user-extendable) + on-demand provider-side `searchHistory()` for the cold tail, offered on an index miss. |
+| **Q2** | `refreshOne` budget | **1.5s on Wi-Fi, 2.5s on cellular** (engine picks by network); fine-tune later. `HistoryQuery` gets a looser ~8s budget since it's explicit + user-confirmed. |
+| **Q3** | Contacts: connector or ambient | **A normal `Connector`** that the entity resolver subscribes to — keeps the engine uniform, no special case. |
+| **Q4** | Notification feed shape | **Buffer-draining `syncDelta`** — the OS callback fills a local queue the connector drains on the normal cadence (force-drained before a "what did I miss?" answer). One engine path; real-time indexing (a streaming sub-interface) isn't worth the second code path for an ask-based product. |
+| **Q5** | Write scope | **Read *and* write** for **calendar, email, Slack, notes** — every write **confirm-gated** with undo where the provider allows it (§3.1). Writes never run on the always-on path. |
+
+### Remaining to settle during build
+
+- Per-source backfill **window override** UX (Q1) and whether pinned cold-tier hits count against the 90-day cap.
+- Whether `searchHistory` results are **ephemeral** or auto-pinned into the index (default: pin, with retention cap).
+- Undo-window specifics per provider (Gmail send-undo vs. Slack delete vs. irreversible-after-window email).
 
 ---
 
-*Spec v0.1 — implements `otto.md` §8 against decisions D1/D4 and the §10 secure-store rule. Argue with the interface, then we lock it and scaffold the engine + Gmail connector.*
+*Spec v0.1 — implements `otto.md` §8 against decisions D1/D4, the §10 secure-store rule, and the Q1–Q5 resolutions above. Next: lock the interface and scaffold the engine + Gmail connector.*
