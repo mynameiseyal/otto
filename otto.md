@@ -7,7 +7,7 @@
 
 ## 1. Product summary
 
-A privacy-first, on-device personal assistant for **Android (first)** and **iOS (later)**. It connects to your apps/accounts, keeps a **local, normalized index** of that data, and answers questions using **deterministic code + on-device NLU (no LLM)**. Two ways to operate it:
+A privacy-first, on-device personal assistant for **Android (first)** and **iOS (later)**. It connects to your apps/accounts, keeps a **local, normalized index** of that data, and answers questions using a **deterministic, on-device, no-LLM core** for its bounded intents — with an **optional, opt-in "Assistant mode"** that reasons over the index using **your own** cloud LLM key (Claude/GPT/Gemini) for open-ended requests (see §13.5 D5). Two ways to operate it:
 
 - **Launch + tap-to-talk / type** (primary, reliable, battery-cheap)
 - **Custom voice wake word** (secondary; Android only for true always-on; iOS via Siri hand-off)
@@ -42,11 +42,13 @@ The design centers on three goals you stated: **low battery, fast response, no L
 - **Secondary (Android only):** opt-in always-on custom wake word, with the battery mitigations in §6.
 - **Set expectations:** iOS will not have a "from any state, hands-free" custom phrase. Communicate this early.
 
-### 3.2 "No LLM"
+### 3.2 "No LLM" — for the core (see §13.5 D5 for the open-ended layer)
 
 Fully workable for a **defined intent set**. Use **on-device speech-to-intent** (audio → intent + slots within a grammar) rather than full transcription + reasoning. Benefits: ~instant, offline, private, deterministic, battery-light. Cost: it only answers what's in the grammar. **Treat the intent catalog as the product roadmap** (§7). Keep an explicit fallback for unrecognized requests.
 
 > Optional later: a *small* on-device classifier (not an LLM) to improve paraphrase tolerance. Still no cloud, still no generative model.
+
+> **Scope of "no LLM" (per D5, §13.5):** "no LLM" is the rule for the **bounded core** — and that core is the default, always-on, zero-egress surface. Open-ended requests ("compile a report," "find everything about X across my apps") that the grammar can't serve are handled by an **opt-in Assistant mode** using the **user's own** cloud LLM key. The LLM is a reasoning layer **on top of** the local index, never on the always-on voice path, and bring-your-own-key only — so no Otto backend appears and D1/D4 hold. The bounded core remains fully functional with Assistant mode off.
 
 ### 3.3 Connectors
 
@@ -167,7 +169,7 @@ Most value comes from **email, calendar, Slack, notes (some), contacts**. Severa
 - **Time:** on-device date/time parser ("tomorrow", "last week", "after 3pm").
 - **Channels/labels:** map "the release channel" → Slack channel ID via synced metadata.
 
-**Fallback contract:** if no intent matches confidently → say so and offer the closest supported action ("I can't search WhatsApp history, but I can recap recent WhatsApp notifications — want that?"). This keeps trust intact and is your roadmap signal.
+**Fallback contract:** if no intent matches confidently → say so and offer the closest supported action ("I can't search WhatsApp history, but I can recap recent WhatsApp notifications — want that?"). This keeps trust intact and is your roadmap signal. **With Assistant mode on (D5, §13.5),** the fallback gains a branch: "…or I can reason over your indexed data to answer that — it'll send the relevant slice to your {provider} via your own key. Do that?" — explicit, opt-in, with an egress badge. Assistant mode off → the original fallback is unchanged.
 
 ---
 
@@ -446,6 +448,42 @@ The freshness gap A leaves (proactive/between-use staleness) is exactly the part
 
 **Net:** **GO** — the zero-cloud architecture (D1) is what makes Otto legally clean: developer-as-non-controller + user-under-household-exemption, with a special-category guardrail and an explicit re-open trigger if the cloud posture ever changes.
 
+### Decision 5 — LLM posture (bounded-deterministic core vs LLM-orchestrated open-ended)
+
+**Why it's a gate:** the product summary (§1) and §3.2 commit to **"no LLM"** as an absolute. That choice is what makes the bounded-intent NLU (§7), the battery story (§6), and the legal posture (D4) clean. But it also caps capability at the **fixed intent catalog**: open-ended requests — *"compile a report on X," "find everything across my apps about that talk," "whatever I ask"* — are exactly the requests a fixed grammar must answer with §7's "I can't answer that yet." So there is a real fork between **what Otto promised** (deterministic, on-device, bounded) and **what an open-ended assistant implies** (a reasoning model over the index). Resolving it is upstream of the intent catalog scope, the privacy doc, and a possible re-open of D1/D4 — because any *cloud* model means content leaves the device. Pick a posture:
+
+| Option | What it means | Cost |
+|---|---|---|
+| **A. Hold no-LLM** | Bounded intents only. Open-ended requests are unsupported (§7 fallback). | Cleanest privacy/legal/battery; weakest capability — fails the "whatever I ask / compile a report" ask |
+| **B. On-device small LLM** | A local quantized model (Gemini Nano / Apple on-device / llama.cpp / MLC) reasons + summarizes over the local index. | Stays **zero-cloud** → D1/D4 untouched. Cost: battery, RAM, device-class floor, app size, weaker quality |
+| **C. Bring-your-own cloud LLM** | User supplies **their own** API key (Claude/GPT/Gemini). Open-ended requests send **user-approved slices of the local index** directly to that provider. | Best quality; matches "use whatever LLM I'm using." Content leaves device → re-opens D1/D4 unless framed as the **user's own** provider relationship |
+
+#### D5 — Decision record (2026-06-20): **hybrid — deterministic no-LLM core (A) is always-on; bring-your-own-LLM "Assistant mode" (C) is opt-in; on-device LLM (B) deferred behind a seam**
+
+**Decision:** Keep the **no-LLM bounded core as the default and always-available** surface — it carries every flagship intent (§7) at zero battery/privacy/legal cost. Add an **opt-in "Assistant mode" that uses the user's *own* cloud LLM (Option C)** for open-ended requests the catalog can't serve. Defer an **on-device model (Option B)** behind an `LlmBackend` seam, to be revisited when on-device models are good/cheap enough to serve open-ended reasoning without the cloud. *This converts the absolute "no LLM" into "**no-LLM core + optional, user-keyed LLM assistant**."*
+
+**The key realization — the LLM is the user's own relationship, exactly like a connector.** D4's legal cleanliness rests on the developer being a **non-controller**: connector data flows are *"the user's own pre-existing relationships with Google/Microsoft/Slack — their controllership, their terms, not Otto's."* **The same logic extends to the model provider.** In Assistant mode the user brings **their own API key** and **their own account** with Anthropic/OpenAI/Google; the device sends context the user **explicitly approved** **directly** to that provider. Otto operates **no backend and no shared key** in this path, so the developer still never receives or processes the content → **still a non-controller**, and the user is still acting under the household exemption (choosing to process their own data through a tool they already use). D5 therefore does **not** break D4 — *as long as the call is device→provider with the user's key.*
+
+**Why C and not "Otto proxies the model":** the moment Otto routes LLM calls through its **own** server or its **own** key, the developer becomes a **processor/controller** of the content sent → full GDPR obligations, transfer map, DPIA, fresh DPO review (precisely D4's re-open trigger). So MVP is **bring-your-own-key only**; no Otto-hosted or Otto-proxied model. This mirrors D1's "stay zero-cloud" constraint: *the moment a backend appears, the posture changes.*
+
+**Why a hybrid and not pure-C:** routing every request through a cloud LLM would throw away the things that make Otto Otto — instant offline answers, zero battery for common asks, no data leaving the device for "when's my next meeting?". So the **router decides** (§4): bounded intent recognized → deterministic handler, answer from index, nothing leaves the device. No confident intent **and** Assistant mode enabled → LLM path over the index slice. Assistant mode **off** → §7 fallback unchanged. The bounded core remains fully functional with Assistant mode disabled, exactly as D3's notification connector keeps the app usable when off.
+
+**Constraints that must hold (make the posture true):**
+- **Bring-your-own-key only** in MVP — no Otto-hosted or Otto-proxied model. Keys in Keystore/Keychain (§10). *(No Otto backend appears → D1 = A holds, D4 non-controller holds.)*
+- **Opt-in, off by default;** the no-LLM core works without it. Assistant mode is a separately-consented capability (cf. D3).
+- **Context minimization + explicit egress consent:** only the **index slices relevant to the query** are sent, never the whole index; the user can see what is sent; a clear **"this leaves your device to {provider}"** badge distinguishes LLM answers from on-device ones. Reuse the special-category guardrail (D4): no special-category-derived profiling; the user controls what context is eligible.
+- **Provider terms are the user's to accept:** surface, don't bury, that API-tier handling is governed by the user's chosen provider (Otto states the egress, links the provider's data terms; does not warrant them).
+- **No always-on LLM:** the LLM never runs on the always-on voice path (that stays Rhino-only, §6); Assistant mode is a tap/explicit-request surface, so the battery story holds.
+- **Architectural seam:** put it behind an `LlmBackend` abstraction with `CloudByoKey` (C, MVP) and a future `OnDeviceModel` (B) implementation, so adding on-device inference later is additive — same pattern as D1's `FreshnessSource`.
+
+**Re-open D5/D4 triggers (keep it falsifiable):** (1) Otto adds an **Otto-hosted or proxied** model, or a shared/managed key → developer becomes processor; (2) content is sent to a provider **without** explicit per-query/eligible-context consent; (3) Assistant mode starts **proactively** sending context (not user-initiated). Any of these → re-run the D4 controller analysis before shipping.
+
+**What this does to the rest of the doc:** §1 and §3.2 "no LLM" become **"no-LLM core + optional bring-your-own LLM assistant"**; §7's fallback gains a branch ("…or, with Assistant mode on, I can reason over your indexed data via your own {provider} key"); §10 adds key storage + egress-consent UX; §14 roadmap adds Assistant mode as a Phase-2+ capability (the bounded core ships first, in Phase 1, unchanged).
+
+**Residual sign-off:** DPO confirms the non-controller analysis **survives** for the BYO-key egress path (it should — no backend, user's key, user-approved context, no onward sharing by Otto); privacy policy gains a clause naming the on-device-vs-egress split and that the model provider is the user's chosen processor. Recorded as **GO for a hybrid**, with the bounded no-LLM core unaffected and shippable first.
+
+**Net:** the "no LLM" line is **relaxed, not abandoned** — the deterministic, on-device, zero-egress core stays the default and ships first; open-ended "whatever I ask / compile a report" capability arrives as an **opt-in assistant on the user's own model key**, which keeps D1 (no Otto backend) and D4 (developer non-controller) intact by construction. Otto is therefore **not** "just another LLM client": the model is an optional reasoning layer **on top of** the connectors + local index, which remain the moat.
+
 **Gate summary**
 
 | # | Decision | Exit = | Owner | Status (2026-06-18) |
@@ -454,8 +492,9 @@ The freshness gap A leaves (proactive/between-use staleness) is exactly the part
 | 2 | Proper-noun voice | Ship vs de-scope person intents | Voice/ML | ✅ **Ship — STT + phonetic match** |
 | 3 | Notification connector | Core / opt-in / cut | Compliance (+Security, DPO) | ✅ **Opt-in, promoted, on-device** |
 | 4 | Third-party data legal | Go / constrain / no-go | Legal + DPO | ✅ **GO w/ constraints** (pending lawyer ratification) |
+| 5 | LLM posture (bounded vs open-ended) | Hold no-LLM / on-device / bring-your-own | Product (+DPO) | ✅ **Hybrid — no-LLM core + opt-in BYO-key assistant** |
 
-> **All four Phase-0 decision gates are resolved (2026-06-18).** Recurring theme: **D1 (zero-cloud) cascades** — it underpins the battery story (D1), the notification Data-safety posture (D3), and the legal posture (D4). The remaining empirical work (battery PoC §13.1, offline-STT name accuracy per D2, notification-feed PoC §13.2) and the human sign-offs (compliance for D3, counsel/DPO for D4) are tracked but do not block Phase 1 planning.
+> **All four original Phase-0 gates are resolved (2026-06-18); D5 added (2026-06-20).** Recurring theme: **D1 (zero-cloud) cascades** — it underpins the battery story (D1), the notification Data-safety posture (D3), the legal posture (D4), **and now the LLM posture (D5)**: bring-your-own-key keeps Otto backendless, so the developer stays a non-controller even with a cloud model in the loop. The no-LLM bounded core (Phase 1) is unaffected by D5 and ships first; the optional LLM assistant is Phase 2+. The remaining empirical work (battery PoC §13.1, offline-STT name accuracy per D2, notification-feed PoC §13.2) and the human sign-offs (compliance for D3, counsel/DPO for D4/D5) are tracked but do not block Phase 1 planning.
 
 ---
 
@@ -465,7 +504,7 @@ The freshness gap A leaves (proactive/between-use staleness) is exactly the part
 |---|---|---|
 | **0 — Validate** | De-risk | The 6 spikes (§13) **+ the 4 decision gates (§13.5)** — Phase 1 is blocked until D1–D4 are decided or their spikes pass/fail against exit criteria |
 | **1 — Android MVP** | Prove the loop | Launch + tap-to-talk; Gmail + Calendar + Slack + Contacts; 8 intents; local index; on-screen + TTS |
-| **2 — Voice + breadth** | Hands-free + coverage | Opt-in always-on wake word; NotificationListener connector; +Notion/OneNote; bigger intent catalog |
+| **2 — Voice + breadth** | Hands-free + coverage | Opt-in always-on wake word; NotificationListener connector; +Notion/OneNote; bigger intent catalog; **opt-in Assistant mode (BYO-key LLM over the index, D5)** for open-ended requests |
 | **3 — iOS** | Second platform | KMP core reuse; Siri/App Intents; EventKit; foreground voice |
 | **4 — Polish/scale** | Robustness | More intents, disambiguation UX, optional small on-device NLU model, sync tuning |
 
@@ -479,8 +518,9 @@ The freshness gap A leaves (proactive/between-use staleness) is exactly the part
 4. **Cloud or zero-cloud:** **DECIDED (2026-06-18) → Option A, pure on-device** for MVP. Posture: *Otto runs entirely on-device; connectors pull directly from providers with the user's own OAuth tokens; freshness comes from on-demand targeted live refresh plus a battery-aware background poll; there is no Otto backend, so no Otto server ever sees user content or metadata. A thin content-free push relay (Option B) is deferred behind a `FreshnessSource` seam and only revisited if proactive alerts ship, poll-freshness proves too stale in the field, or iOS background budgets force it.* See `§13.5` D1 decision record. (Privacy doc: TODO — restate this posture there.)
 5. **Build model:** KMP shared core vs fully native ×2?
 6. **First connector set:** confirm Gmail + Calendar + Slack + Contacts as Phase 1.
+7. **LLM posture:** **DECIDED (2026-06-20) → hybrid** (§13.5 D5). No-LLM bounded core is the default and ships first; an **opt-in Assistant mode using the user's own cloud LLM key** handles open-ended requests over the local index. Bring-your-own-key only (no Otto backend/proxy), so D1 (zero-cloud) and D4 (non-controller) hold. On-device model (Option B) deferred behind an `LlmBackend` seam. (Privacy doc: TODO — state the on-device-vs-egress split and that the model provider is the user's chosen processor.)
 
-> **Gated decisions:** items above intersect the Phase-0 gates in §13.5 — **#4 → D1 (cloud)**. Also tracked there but not yet in this list: **D2 proper-noun voice** (feasibility of person-name voice intents), **D3 notification-connector status** (core vs opt-in vs cut), and **D4 legal posture on third-party data** (go/constrain/no-go). Close §13.5 before locking these.
+> **Gated decisions:** items above intersect the Phase-0 gates in §13.5 — **#4 → D1 (cloud)**, **#7 → D5 (LLM posture)**. Also tracked there: **D2 proper-noun voice** (feasibility of person-name voice intents), **D3 notification-connector status** (core vs opt-in vs cut), and **D4 legal posture on third-party data** (go/constrain/no-go). All five gates are now resolved (§13.5 gate summary).
 
 ---
 
