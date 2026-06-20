@@ -56,7 +56,7 @@ Otto's core answers come from on-device code with **no AI model and no egress**.
 
 - **You bring your own API key** for your chosen provider (Claude/OpenAI/Google). Otto does **not** host or proxy a model and has **no shared key** — the call goes **directly from your device to your provider** (decision D5).
 - **Only the index slice relevant to your request is sent** — never your whole index. Otto shows you what is being sent, and a clear **"this leaves your device to {provider}"** badge distinguishes these answers from on-device ones.
-- **The provider is your processor, under its terms.** How your provider handles API requests (including any training/retention policy) is governed by the agreement *you* have with them. The **developer/API terms** that BYO-key use falls under **typically exclude your data from model training** — unlike the consumer web apps (ChatGPT, the Claude web app) — though this varies by provider and your account settings. Otto links you to those terms; it does not warrant them, so check your provider's current policy.
+- **The provider is your processor, under its terms.** How your provider handles API requests (including any training/retention policy) is governed by the agreement *you* have with them. The **developer/API terms** that BYO-key usage falls under **typically exclude your data from model training** — unlike the consumer web apps (ChatGPT, the Claude web app) — though this varies by provider and your account settings. Otto links you to those terms; it does not warrant them, so check your provider's current policy.
 - Your API key is stored in the device secure store (Android Keystore / iOS Keychain) and is never transmitted to the developer.
 
 ---
@@ -64,7 +64,7 @@ Otto's core answers come from on-device code with **no AI model and no egress**.
 ## 6. How your data is stored
 
 - **Local, encrypted index** on your device (SQLCipher / OS file protection). It is the only copy Otto maintains.
-- **No OS cloud backup of your data.** Otto **disables OS-level automatic backups** of its index and tokens (Android Auto Backup excluded via backup rules / `allowBackup=false`; iOS files excluded from iCloud/iTunes backup). This keeps the zero-cloud promise intact — your indexed data is **never** copied to Google Backup or iCloud. The only off-device copy is the **encrypted export you create yourself** (§7).
+- **No OS cloud backup of your data.** Otto **disables OS-level automatic backups** of its index (Android Auto Backup excluded via backup rules / by disabling backup; iOS files excluded from iCloud/iTunes backup). Your tokens and keys live in the OS secure store (Keystore/Keychain) with backup-prevention attributes where applicable — on Android they are hardware-bound and never backed up; on iOS they are marked device-only. This keeps the zero-cloud promise intact — your indexed data is **never** copied to Google Backup or iCloud. The only off-device copy is the **encrypted export you create yourself** (§7).
 - **Tokens and keys** (OAuth tokens, your AI API key) live in the OS secure store (Keystore/Keychain), never in the developer's hands.
 - **Retention caps:** stored history is capped (configurable, e.g. 90 days) and purgeable per source.
 
