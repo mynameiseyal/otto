@@ -22,7 +22,8 @@ Examples: `chore/d1-cloud-vs-zero-cloud`, `feat/gmail-connector`, `docs/intent-c
 1. Branch off `main`: `git switch -c <type>/<slug>`.
 2. Commit in small, focused steps. **Conventional Commit titles**: `<type>: <imperative description>` (no issue number in the title), body explains *why*.
 3. Push: `git push -u origin <branch>`.
-4. Open a PR into `main`. If it resolves a GitHub issue, put `Closes #<issue>` in the body. Self-review, merge (squash). Delete the branch after merge.
+4. Open a PR into `main`. If it resolves a GitHub issue, put `Closes #<issue>` in the body.
+5. **Always wait for Gemini's automated review** before merging. Don't merge immediately on open — let the Gemini Code Assist review land, then address its comments. Merge (squash) only once the review has arrived **and there are no blocking findings** (fix or consciously dismiss any non-blockers first). Delete the branch after merge.
 
 ## Phase-0 gates (must close before Phase 1)
 
