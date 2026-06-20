@@ -78,6 +78,7 @@ interface Connector<RAW> {
     /**
      * Pull one page of changes since `cursor` (null = initial backfill).
      * MUST be resumable: persist nothing itself; return the cursor to resume from.
+     * Returns ONLY successful pages; throws ConnectorException(error) on failure (§4.1).
      */
     suspend fun syncDelta(cursor: SyncCursor?): SyncPage<RAW>
 
@@ -89,7 +90,7 @@ interface Connector<RAW> {
      * Bounded by a hard timeout (default ≤1.5s). On timeout/error it MUST signal
      * fallback-to-index, never throw into the response path. (§8 live-refresh)
      */
-    suspend fun refreshOne(query: RefreshQuery): RefreshOutcome = RefreshOutcome.Unsupported
+    suspend fun refreshOne(query: RefreshQuery): RefreshOutcome<RAW> = RefreshOutcome.Unsupported
 
     /** Revoke access; optionally purge this source's rows from the index. */
     suspend fun revoke(options: RevokeOptions)
@@ -98,7 +99,7 @@ interface Connector<RAW> {
 
 Design notes:
 - **Generic `RAW`** keeps `syncDelta` and `normalize` honest: the connector owns its wire type; the engine only ever sees `SyncRecord`. `normalize` is **pure** so it is trivially unit-testable against captured fixtures.
-- **`syncDelta` is one page.** The engine loops it until `page.status != Partial`, persisting `page.cursor` between calls. This gives resumable backfill and incremental delta with the same method.
+- **`syncDelta` is one page.** The engine loops it while `page.hasMore`, persisting `page.cursor` between calls. This gives resumable backfill and incremental delta with the same method. Failures don't ride in the page — they're **thrown** (§4.1), so a `SyncPage` always means success.
 - **No method blocks on network in the query path** except `refreshOne`, which is explicitly bounded.
 
 ---
@@ -107,12 +108,13 @@ Design notes:
 
 ```kotlin
 // --- Sync ---
+// syncDelta returns ONLY successful pages; failures are thrown as ConnectorException
+// (§4.1), so rich error detail (retryAfter, missing scopes) isn't flattened into an enum.
 data class SyncPage<RAW>(
     val records: List<RAW>,
-    val cursor: SyncCursor,        // opaque; resume token / historyId / updatedTime watermark
-    val status: SyncStatus,
+    val cursor: SyncCursor?,       // opaque resume token / historyId / updatedTime watermark; null if no progress
+    val hasMore: Boolean,          // engine loops syncDelta while true
 )
-enum class SyncStatus { COMPLETE, PARTIAL, RATE_LIMITED, AUTH_REQUIRED, FAILED }
 @JvmInline value class SyncCursor(val token: String)
 
 // --- Capabilities ---
@@ -131,10 +133,10 @@ sealed interface AuthResult {
 
 // --- Live refresh ---
 data class RefreshQuery(val keywords: List<String>, val since: Instant?, val budget: Duration = 1.5.seconds)
-sealed interface RefreshOutcome {
-    data class Fresh(val records: List<SyncRecord>) : RefreshOutcome
-    data object FellBackToIndex : RefreshOutcome   // timed out / errored — answer from index, label stale
-    data object Unsupported : RefreshOutcome
+sealed interface RefreshOutcome<out RAW> {
+    data class Fresh<RAW>(val records: List<RAW>) : RefreshOutcome<RAW>  // engine runs these through normalize()
+    data object FellBackToIndex : RefreshOutcome<Nothing>   // timed out / errored — answer from index, label stale
+    data object Unsupported : RefreshOutcome<Nothing>
 }
 
 data class RevokeOptions(val purgeIndexedData: Boolean = true)
@@ -157,7 +159,12 @@ sealed interface ConnectorError {
     data object AccountGone : ConnectorError
     data class Permanent(val cause: String) : ConnectorError
 }
+
+/** syncDelta throws this on failure; the engine catches and branches recoverable vs terminal. */
+class ConnectorException(val error: ConnectorError) : Exception()
 ```
+
+`syncDelta` **throws** `ConnectorException(error)` on any failure (so a returned `SyncPage` always means success); `authenticate` surfaces the same set via `AuthResult.Failed(error)`. Either way the engine branches on recoverable (retry/refresh) vs terminal (re-auth/disable).
 
 ---
 
@@ -169,7 +176,7 @@ The engine — **not** the connector — implements every row of §8's failure/l
 |---|---|
 | **Rate limits** | Per-connector **token-bucket**; honor `RateLimited.retryAfter`; **exponential backoff with jitter**. |
 | **Backoff isolation** | Each connector has its own scheduler lane. One connector being limited/failed **never** delays queries answered from the index or other connectors' syncs. |
-| **Partial sync** | Loop `syncDelta` while `PARTIAL`; persist `cursor` after every page so a kill resumes mid-backfill. Record per-source `lastSyncedAt` + `freshnessState`. |
+| **Partial sync** | Loop `syncDelta` while `page.hasMore`; persist `cursor` after every page so a kill resumes mid-backfill. Record per-source `lastSyncedAt` + `freshnessState`. |
 | **Token expiry** | `TokenExpiredRefreshable` → silent refresh via `TokenStore`, then retry. Terminal errors → mark `stale`, never silently drop indexed data, raise re-auth. |
 | **Scope drift** | After each `authenticate`, diff `capabilities()`; on `ScopeLost`, the planner **degrades** affected intents and tells the user, rather than returning wrong answers. |
 | **Idempotency** | Upserts keyed by `sourceEntityId`; re-syncing a page is a no-op. Tombstones delete. |
@@ -206,7 +213,7 @@ A shared test harness runs each connector against captured fixtures + a mock pro
 
 1. **Pure-normalize golden tests** — fixture `RAW` → expected `SyncRecord`s, including a tombstone case and a unicode/non-Latin name case (feeds D2 phonetic matching).
 2. **Resumability** — kill after page _n_; resume from persisted cursor; assert no dupes, no gaps (idempotency).
-3. **Error mapping** — provider 401/403/429/5xx/404 map to the correct `ConnectorError` variant (recoverable vs terminal).
+3. **Error mapping** — provider 401/403/429/5xx/404 are thrown as `ConnectorException` with the correct `ConnectorError` variant (recoverable vs terminal).
 4. **Backoff isolation** — a connector stuck in `RATE_LIMITED` does not delay another connector's sync or an index-answered query.
 5. **Live-refresh budget** — `refreshOne` over budget returns `FellBackToIndex` within the timeout; never throws.
 6. **Revoke+purge** — after `revoke(purgeIndexedData=true)`, no rows for that source remain.
@@ -241,7 +248,7 @@ class GmailConnector(private val tokens: TokenStore) : Connector<GmailMessage> {
         ))
     )
 
-    override suspend fun refreshOne(query: RefreshQuery): RefreshOutcome { /* one bounded history.list */ }
+    override suspend fun refreshOne(query: RefreshQuery): RefreshOutcome<GmailMessage> { /* one bounded history.list */ }
     override suspend fun revoke(options: RevokeOptions) { /* token revoke + optional purge */ }
 }
 ```
