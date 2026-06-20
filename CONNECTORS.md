@@ -107,6 +107,12 @@ interface Connector<RAW> {
      */
     suspend fun write(action: WriteAction): WriteResult = throw UnsupportedOperationException()
 
+    /**
+     * Reverse a previous write via the token from its UndoHandle (§3.1), while the handle
+     * is still valid. Throws ConnectorException on failure (e.g. window elapsed).
+     */
+    suspend fun undo(token: String) = throw UnsupportedOperationException()
+
     /** Revoke access; optionally purge this source's rows from the index. */
     suspend fun revoke(options: RevokeOptions)
 }
@@ -133,8 +139,9 @@ sealed interface WriteAction {
     data class SendMessage(val to: List<PersonRef>, val body: String, val replyTo: SourceEntityId? = null) : WriteAction // email or chat, per connector
     data class CreateNote(val title: String?, val body: String, val appendTo: SourceEntityId? = null) : WriteAction
 }
+enum class Rsvp { ACCEPTED, DECLINED, TENTATIVE }
 data class WriteResult(val created: SourceEntityId?, val undo: UndoHandle?)
-class UndoHandle(val expiresAt: Instant?, internal val token: String)  // null expiry = undoable until further notice
+class UndoHandle(val expiresAt: Instant?, val token: String)  // pass token to undo(); null expiry = undoable until further notice
 ```
 
 ---
@@ -277,7 +284,7 @@ A shared test harness runs each connector against captured fixtures + a mock pro
 4. **Backoff isolation** — a connector stuck in `RATE_LIMITED` does not delay another connector's sync or an index-answered query.
 5. **Live-refresh budget** — `refreshOne` over budget returns `FellBackToIndex` within the timeout; never throws.
 6. **History search** (if `SEARCH_HISTORY`) — `searchHistory` returns matches older than the hot-index window; results flow through `normalize` identically to sync; respects its budget.
-7. **Write confirm + undo** (if any `WRITE_*`) — `write()` is reachable only after a confirm step in the harness; returns a usable `UndoHandle` where the provider supports reversal; a connector with no write scope rejects `write()` cleanly.
+7. **Write confirm + undo** (if any `WRITE_*`) — `write()` is reachable only after a confirm step in the harness; where reversal is supported, the returned `UndoHandle.token` drives `undo()` and the action is gone; a connector with no write scope rejects `write()`/`undo()` cleanly.
 8. **Revoke+purge** — after `revoke(purgeIndexedData=true)`, no rows for that source remain.
 
 ---
@@ -319,6 +326,7 @@ class GmailConnector(private val tokens: TokenStore) : Connector<GmailMessage> {
 
     // write (§3.1): confirm-gated send/reply; undo = Gmail's send-undo window
     override suspend fun write(action: WriteAction): WriteResult { /* messages.send; return UndoHandle(expiresAt=+30s) */ }
+    override suspend fun undo(token: String) { /* cancel within send-undo window / messages.delete */ }
 
     override suspend fun revoke(options: RevokeOptions) { /* token revoke + optional purge */ }
 }
