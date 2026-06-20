@@ -18,6 +18,9 @@ DerivedData/
 Pods/
 .kotlin/
 
+# Local Claude Code overrides (personal, machine-specific)
+.claude/settings.local.json
+
 # Secrets / local config
 *.env
 .env
