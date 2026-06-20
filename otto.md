@@ -228,6 +228,7 @@ Most value comes from **email, calendar, Slack, notes (some), contacts**. Severa
 
 - **Local-first** is the headline privacy story — audio and indexed data stay on device by default.
 - **Token storage:** Android **Keystore**, iOS **Keychain**; encrypted DB at rest (SQLCipher / file protection).
+- **Disable OS auto-backup (hard rule — required for D1 zero-cloud):** OS-level automatic backup would copy the index + tokens off-device to the user's cloud (Google Backup / iCloud) by default, silently breaking "nothing leaves the device." Otto **must** exclude its data store and secure-store material from Android **Auto Backup**/**D2D transfer** (backup rules / `android:allowBackup="false"` or scoped `dataExtractionRules`) and from **iCloud/iTunes backup** (file protection + `isExcludedFromBackup`). The only off-device copy is the user-initiated **encrypted export** (§5). *Verify this in the connector/store spike — it's an easy default to miss.*
 - **Scoped OAuth** per connector; clear consent screens; per-source revoke + purge.
 - **Compliance:** GDPR-aligned (data minimization, export, delete). Privacy policy + data-handling doc required.
 - **Store-policy landmines (plan for review friction):**
@@ -387,7 +388,7 @@ The freshness gap A leaves (proactive/between-use staleness) is exactly the part
 - **Sensitive redaction is automatic:** on Android 15+, a third-party listener without `RECEIVE_SENSITIVE_NOTIFICATIONS` (which we won't hold — it's signature/role) **cannot see OTP/sensitive notification content**. We treat that as a *feature*, not a gap, and document the limit.
 - **Honest foreground-service notification** for the always-on voice path is separate (needs `POST_NOTIFICATIONS` on Android 13+).
 
-**Capability limits to communicate:** Android-only; forward-only (not history); OTP/sensitive content redacted by the OS; quality depends on what each app puts in its notifications.
+**Capability limits to communicate:** Android-only; forward-only (not history); OTP/sensitive content redacted by the OS **on Android 15+ only** (on Android 14 and below the OS does *not* withhold it, so it can be indexed locally — surface this caveat in the enable flow); quality depends on what each app puts in its notifications.
 
 **Draft compliance artifacts (for compliance-owner + legal review):**
 
