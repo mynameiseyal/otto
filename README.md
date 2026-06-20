@@ -15,3 +15,6 @@ Phase 1 is gated on the Phase-0 decisions and their spike exit criteria (see `§
 5. **LLM posture** — bounded no-LLM vs open-ended. → **Hybrid: no-LLM core + opt-in bring-your-own-key Assistant mode.**
 
 The user-facing privacy posture restating these decisions lives in [`PRIVACY.md`](./PRIVACY.md) (draft, pending legal ratification).
+
+Phase-1 build specs:
+- [`CONNECTORS.md`](./CONNECTORS.md) — the connector adapter interface (the contract every data source implements).
