@@ -149,6 +149,8 @@ Most value comes from **email, calendar, Slack, notes (some), contacts**. Severa
 
 ## 7. NLU / intent engine ("no-LLM" done properly)
 
+> **Full catalog:** the working intent catalog — query + action intents, slots, voice routing, the Phase-1 cut, and the Assistant-mode fallback boundary — lives in [`INTENTS.md`](./INTENTS.md). This section stays the approach + starter examples.
+
 **Approach:** a curated **intent catalog**, each intent = grammar + required/optional slots + a handler that queries the index. Entity resolution turns slot text into concrete IDs.
 
 **Example intents (starter set):**

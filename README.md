@@ -18,3 +18,4 @@ The user-facing privacy posture restating these decisions lives in [`PRIVACY.md`
 
 Phase-1 build specs:
 - [`CONNECTORS.md`](./CONNECTORS.md) — the connector adapter interface (the contract every data source implements).
+- [`INTENTS.md`](./INTENTS.md) — the intent catalog (query + action intents Otto understands, and the Phase-1 cut).
