@@ -175,7 +175,9 @@ Most value comes from **email, calendar, Slack, notes (some), contacts**. Severa
 
 ## 8. Connector framework & feasibility matrix
 
-**Adapter interface (every connector implements):** `authenticate()` · `syncDelta()` · `normalize()` · `capabilities()` · `revoke()`.
+> **Full interface spec:** the concrete contract — `Connector` interface, normalized entities, error taxonomy, sync-engine semantics, conformance suite, and a worked Gmail example — lives in [`CONNECTORS.md`](./CONNECTORS.md). This section stays the summary + feasibility matrix.
+
+**Adapter interface (every connector implements):** `authenticate()` · `syncDelta()` · `normalize()` · `capabilities()` · `revoke()` (+ optional `refreshOne()`).
 
 **Failure, limit & lifecycle semantics (every connector must declare and handle):**
 
