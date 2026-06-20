@@ -23,7 +23,7 @@ phase         1 | 2 | 3   (roadmap tag, not a promise of order)
 handler       one line: what it reads/does and what it answers
 ```
 
-**Slot types** (resolved by the entity layer, §5): `person`, `timeframe`, `datetime`, `keyword`, `channel`, `label`, `duration`, `text`.
+**Slot types** (resolved by the entity layer, §5): `person`, `timeframe`, `datetime`, `duration`, `keyword`, `text`, `channel`, `label`, `field` (a contact field, e.g. phone/email), `event_ref` (a calendar event), `thread` (a message/thread), `note_ref` (an existing note), `rsvp` (`Rsvp` enum — CONNECTORS.md §3.1).
 
 ---
 
@@ -47,7 +47,7 @@ How an utterance reaches an intent depends on whether it carries a **proper noun
 |---|---|---|---|---|---|
 | `next_meeting` | "When's my next meeting?" | — | Calendar `READ_EVENTS` | RHINO | **1** |
 | `today_agenda` | "What's on today?", "What's my day look like?" | timeframe? | Calendar `READ_EVENTS` | RHINO | **1** |
-| `meeting_with_person` | "When do I meet Avital?", "Next call with Dana?" | person | Calendar + Contacts | STT_PHONETIC | **1** |
+| `meeting_with_person` | "When do I meet Avital?", "Next call with Dana?" | person | Calendar `READ_EVENTS` + Contacts `READ_CONTACTS` | STT_PHONETIC | **1** |
 | `free_slot` | "Am I free at 3?", "When am I free tomorrow?" | datetime/timeframe | Calendar `READ_EVENTS` | RHINO | 2 |
 
 ### 3.2 Email
@@ -55,7 +55,7 @@ How an utterance reaches an intent depends on whether it carries a **proper noun
 | intent | utterances | slots | sources | voice | phase |
 |---|---|---|---|---|---|
 | `unread_from` | "Any unread mail from my boss?" | person/label, timeframe? | Email `READ_MESSAGES` | STT_PHONETIC | **1** |
-| `last_message_from` | "What did Dominik last send me?" | person | Email (+ Slack) | STT_PHONETIC | **1** |
+| `last_message_from` | "What did Dominik last send me?" | person | Email `READ_MESSAGES` (+ Slack `READ_MESSAGES`) | STT_PHONETIC | **1** |
 | `search_mail` | "Did I get the invoice from Acme?" | keyword, timeframe? | Email `READ_MESSAGES` | STT_PHONETIC | 2 |
 | `find_old_mail` | "Find that email from years ago about the lease" | keyword, person? | Email `SEARCH_HISTORY` | TYPED_ONLY | 2 |
 
@@ -63,8 +63,8 @@ How an utterance reaches an intent depends on whether it carries a **proper noun
 
 | intent | utterances | slots | sources | voice | phase |
 |---|---|---|---|---|---|
-| `search_messages` | "Did anyone message me about the release?" | keyword, timeframe? | Email + Slack + Notifs | STT_PHONETIC | **1** |
-| `notifications_recap` | "What did I miss?" | timeframe? | Notification feed | RHINO | **1** |
+| `search_messages` | "Did anyone message me about the release?" | keyword, timeframe? | Email / Slack / Notifs `READ_MESSAGES` | STT_PHONETIC | **1** |
+| `notifications_recap` | "What did I miss?" | timeframe? | Notifications `READ_MESSAGES` | RHINO | **1** |
 | `unread_in_channel` | "Anything new in the release channel?" | channel | Slack `READ_MESSAGES` | STT_PHONETIC | 2 |
 
 ### 3.4 Notes & contacts
@@ -78,8 +78,8 @@ How an utterance reaches an intent depends on whether it carries a **proper noun
 
 | intent | utterances | slots | sources | voice | phase |
 |---|---|---|---|---|---|
-| `about_person` | "Catch me up on Dana", "What's going on with Avital?" | person | Email + Slack + Calendar + Notifs | STT_PHONETIC | 2 |
-| `about_topic` | "What do I have on Project Falcon?" | keyword | all readable sources | TYPED_ONLY | 2 |
+| `about_person` | "Catch me up on Dana", "What's going on with Avital?" | person | Email / Slack / Notifs `READ_MESSAGES` + Calendar `READ_EVENTS` | STT_PHONETIC | 2 |
+| `about_topic` | "What do I have on Project Falcon?" | keyword | all `READ_*` sources | TYPED_ONLY | 2 |
 
 > `about_*` are the boundary intents: a deterministic **gather-and-list** ("here are 6 recent items about Dana"). Turning that gathered set into a written **summary/report** is Assistant mode (§6), not a bounded intent.
 
@@ -92,10 +92,10 @@ How an utterance reaches an intent depends on whether it carries a **proper noun
 | intent | utterances | slots | sources | confirm → undo | phase |
 |---|---|---|---|---|---|
 | `create_event` | "Schedule lunch with Dana Thursday at 1" | text, person?, datetime, duration? | Calendar `WRITE_EVENTS` | "Create event …?" → delete | 2 |
-| `respond_event` | "Accept the 3pm invite", "Decline standup" | event ref, rsvp | Calendar `WRITE_EVENTS` | "RSVP {accept} …?" → re-RSVP | 2 |
-| `reply_message` | "Reply to Dana: on my way" | person/thread, text | Email/Slack `SEND_MESSAGE` | "Send to Dana …?" → undo-send window | 2 |
-| `send_message` | "Tell the team I'll be late" | recipient(s), text | Email/Slack `SEND_MESSAGE` | "Send …?" → undo-send / delete | 2 |
-| `create_note` | "Note: pick up the dry cleaning" | text, note? | Notes `WRITE_NOTES` | "Add note …?" → delete | 2 |
+| `respond_event` | "Accept the 3pm invite", "Decline standup" | event_ref, rsvp | Calendar `WRITE_EVENTS` | "RSVP {accept} …?" → re-RSVP | 2 |
+| `reply_message` | "Reply to Dana: on my way" | thread \| person, text | Email/Slack `SEND_MESSAGE` | "Send to Dana …?" → undo-send window | 2 |
+| `send_message` | "Tell the team I'll be late" | person (recipients), text | Email/Slack `SEND_MESSAGE` | "Send …?" → undo-send / delete | 2 |
+| `create_note` | "Note: pick up the dry cleaning" | text, note_ref? | Notes `WRITE_NOTES` | "Add note …?" → delete | 2 |
 
 ### 4.1 Device actions (no connector — on-device OS)
 
