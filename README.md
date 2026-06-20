@@ -13,3 +13,5 @@ Phase 1 is gated on the Phase-0 decisions and their spike exit criteria (see `§
 3. **Notification connector status** — core vs opt-in vs cut (Play policy). → **Opt-in, promoted, on-device.**
 4. **Legal posture on third-party data** — go / constrain / no-go. → **GO with constraints.**
 5. **LLM posture** — bounded no-LLM vs open-ended. → **Hybrid: no-LLM core + opt-in bring-your-own-key Assistant mode.**
+
+The user-facing privacy posture restating these decisions lives in [`PRIVACY.md`](./PRIVACY.md) (draft, pending legal ratification).
